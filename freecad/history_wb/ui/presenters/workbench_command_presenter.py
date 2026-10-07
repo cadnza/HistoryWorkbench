@@ -4,7 +4,7 @@
 """App-scoped presenter for workbench command flows."""
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 
 if TYPE_CHECKING:
@@ -27,13 +27,14 @@ from ...application.actions.git_repo.get_git_repository_init_candidates import (
 )
 from ...application.actions.git_repo.initialize_git_repository import InitializeGitRepositoryAction
 from ...application.actions.git_workflow.commit_staging import CommitStagingAction
-from ...domain.git.models import GitRepository
+from ...application.actions.result_models import Result
 from ...qt import QtCore
 from ...utils import Log, translate
 from ..state import ApplicationState
 from ..views.diff_panel.dialog_view import DialogView
 from ..views.diff_panel.dialogs import GitConfigDialogResult
 from .git_repository.author_configuration_handler import AuthorConfigurationHandler
+from .git_repository.background_task import GitOperationThread
 from .git_repository.commit_iteration_handler import CommitIterationHandler
 from .git_repository.gitignore_handler import GitIgnoreHandler
 from .git_repository.initialize_repository_handler import InitializeRepositoryHandler
@@ -90,6 +91,7 @@ class WorkbenchCommandPresenter(QtCore.QObject):
         self._get_main_window = get_main_window
         self._find_active_git_repository_action = find_active_git_repository_action
         self._check_git_availability_action = check_git_availability_action
+        self._repository_refresh_thread: GitOperationThread | None = None
 
         # Create handlers with dialog callbacks that create DialogView at call time
         self._author_handler = AuthorConfigurationHandler(
@@ -187,30 +189,79 @@ class WorkbenchCommandPresenter(QtCore.QObject):
 
         self._gitignore_handler.execute(repo)
 
-    def refresh_git_repository(self) -> GitRepository | None:
-        """Detect and update the active git repository in application state.
+    def refresh_git_repository(self) -> None:
+        """Detect the active repository asynchronously and update application state.
 
         Uses sticky repository logic: the current repository is retained
         as long as at least one open document belongs to it.
 
-        Emits repository_changed with the resulting repository (or None).
-
-        Returns:
-            The detected GitRepository, or None if no repository found.
+        FreeCAD document paths and preference-backed Git configuration are
+        captured before the background worker starts.
         """
-        current_repo = self._application_state.git_repository
-        result = self._find_active_git_repository_action.execute(current_repository=current_repo)
+        if self._repository_refresh_thread is not None:
+            return
 
-        if result.is_success:
-            self._application_state.git_repository = result.data
-            self.repository_changed.emit(result.data)
-            return result.data
+        document_paths = self._find_active_git_repository_action.get_open_document_paths()
+        git_executable = self._find_active_git_repository_action.get_git_executable()
+        current_repo = self._application_state.git_repository
+        worker = GitOperationThread(
+            lambda: self._find_active_git_repository_action.execute(
+                document_paths,
+                current_repository=current_repo,
+                git_executable=git_executable,
+            ),
+            current_repo,
+            self,
+        )
+        self._repository_refresh_thread = worker
+        worker.succeeded.connect(self._on_repository_refresh_succeeded)
+        worker.failed.connect(self._on_repository_refresh_failed)
+        worker.finished.connect(self._on_repository_refresh_finished)
+        worker.start()
+
+    def get_git_executable(self) -> str | None:
+        """Resolve Git configuration on the UI thread for background operations."""
+        return self._find_active_git_repository_action.get_git_executable()
+
+    def check_git_availability(self) -> bool:
+        """Show configured guidance when Git is unavailable."""
+        return self._ensure_git_available()
+
+    def _on_repository_refresh_succeeded(self, context: object, result: object) -> None:
+        """Apply repository detection result on the UI thread."""
+        if context != self._application_state.git_repository:
+            return
+
+        action_result = cast(Result, result)
+        if action_result.is_success:
+            self._application_state.git_repository = action_result.data
+            self.repository_changed.emit(action_result.data)
+            return
 
         # Detection failed; keep existing repo in state (sticky behavior).
         # A missing git executable is a distinct cause worth surfacing.
         self._ensure_git_available()
-        self.repository_changed.emit(current_repo)
-        return current_repo
+        self.repository_changed.emit(self._application_state.git_repository)
+
+    def _on_repository_refresh_failed(self, context: object, error: str) -> None:
+        """Surface unexpected worker errors and preserve the current repository."""
+        if context != self._application_state.git_repository:
+            return
+
+        Log.error(f"Repository refresh failed: {error}")
+        self._show_error_message(
+            translate("History", "Project Refresh Failed"),
+            translate("History", "Could not refresh the project: %1").replace("%1", error),
+        )
+        self.repository_changed.emit(self._application_state.git_repository)
+
+    def _on_repository_refresh_finished(self) -> None:
+        """Release the completed refresh worker after its signals are delivered."""
+        worker = self.sender()
+        if worker is self._repository_refresh_thread:
+            self._repository_refresh_thread = None
+            if isinstance(worker, GitOperationThread):
+                worker.deleteLater()
 
     def _ensure_git_available(self) -> bool:
         """Probe the git executable and show guidance when it cannot be found.

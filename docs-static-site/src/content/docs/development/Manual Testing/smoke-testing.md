@@ -6,6 +6,7 @@ description: Checklist for project detection, iteration operations, settings, an
 
 - Detect project from open FreeCAD documents on workbench activation
 - Refresh project detection and reload iterations
+- Keep interacting with FreeCAD while project refresh and commit history load are running
 - Display "No project detected" state when no repository found
 - Click project label to open repository directory in file browser
 

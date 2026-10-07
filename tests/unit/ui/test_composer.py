@@ -221,6 +221,7 @@ def test_compose_wires_action_dependencies_and_callbacks() -> None:
         assert git_kwargs["get_commits_action"] is mock_container.get_commits_action
         assert git_kwargs["application_state"] is mock_application_state
         assert git_kwargs["workbench_command_presenter"] is mock_command_presenter
+        assert git_kwargs["parent"] is mock_view.history_panel
 
         # Composer delegates public signal binding to ui.wiring.
         mock_view.history_panel.refresh_requested.connect.assert_called_once_with(

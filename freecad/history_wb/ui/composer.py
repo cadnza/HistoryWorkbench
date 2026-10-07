@@ -107,6 +107,7 @@ def compose_and_register_panel(
         application_state=application_state,
         clear_doc_diffs=diff_presenter.clear_doc_diff,
         workbench_command_presenter=command_presenter,
+        parent=view.history_panel,
     )
     ui_registry.register_git_repository_presenter(git_repo_presenter)
 

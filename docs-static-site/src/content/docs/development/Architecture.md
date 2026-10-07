@@ -31,6 +31,8 @@ FreeCAD commands are entry points. They expose `GetResources()`, answer `IsActiv
 
 UI code owns Qt widgets, presenters, dialog flow, display feedback, translated display text, and UI session state. Application actions own workbench use cases such as stage, commit, diff, save-before-diff, and open visual comparison. Domain owns CAD-history models, rules, and algorithms. Infrastructure owns concrete FreeCAD, git, filesystem, YAML, and FreeCAD preference calls.
 
+FreeCAD document access, preference reads, and Qt widget updates stay on the UI thread. Presenters snapshot document paths and the configured Git executable before dispatching blocking Git subprocess operations to a Qt worker; worker results return to the UI thread before state or widgets change.
+
 FreeCAD document changes often update the visible desktop UI as a side effect. Visibility is not the layer boundary. Opening, saving, recomputing, staging, and creating comparison documents belong in application use cases when they are part of a workbench operation and are performed through ports.
 
 ## Runtime Flow

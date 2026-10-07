@@ -31,7 +31,7 @@ class GitService:
         """
         self._git_port = git_port
 
-    def get_repository(self, path: str) -> GitRepository | None:
+    def get_repository(self, path: str, git_executable: str | None = None) -> GitRepository | None:
         """Get GitRepository for path.
 
         This method determines if a given path is within a git repository and,
@@ -43,7 +43,7 @@ class GitService:
         Returns:
             GitRepository if path is in a git repo, None otherwise.
         """
-        git_root = self._git_port.find_top_level_git_path(path)
+        git_root = self._git_port.find_top_level_git_path(path, git_executable)
         if git_root is None:
             return None
         name = git_path_name(git_root)
@@ -53,7 +53,17 @@ class GitService:
         """Return whether the git executable can be located (preference or PATH)."""
         return self._git_port.is_git_executable_available()
 
-    def get_commits(self, repo: GitRepository, limit: int = 20, skip: int = 0) -> list[GitCommit]:
+    def get_git_executable(self) -> str | None:
+        """Resolve configured Git executable for an operation running off the UI thread."""
+        return self._git_port.get_git_executable()
+
+    def get_commits(
+        self,
+        repo: GitRepository,
+        limit: int = 20,
+        skip: int = 0,
+        git_executable: str | None = None,
+    ) -> list[GitCommit]:
         """Get recent commits from git repository.
 
         Args:
@@ -64,7 +74,7 @@ class GitService:
         Returns:
             List of GitCommit objects in DESC order.
         """
-        return self._git_port.get_commits(repo.absolute_path, limit, skip)
+        return self._git_port.get_commits(repo.absolute_path, limit, skip, git_executable)
 
     def get_eligible_docs(self, repo: GitRepository, documents: list[DocumentLike]) -> list[DocumentLike]:
         """Filter documents to those within the git repository.

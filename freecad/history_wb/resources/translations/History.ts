@@ -590,6 +590,26 @@ Saved history will not be affected.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
+        <location filename="../../ui/presenters/git_repository_presenter.py" line="238"/>
+        <source>History Load Failed</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../../ui/presenters/git_repository_presenter.py" line="239"/>
+        <source>Could not load project history: %1</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../../ui/presenters/workbench_command_presenter.py" line="253"/>
+        <source>Project Refresh Failed</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../../ui/presenters/workbench_command_presenter.py" line="254"/>
+        <source>Could not refresh the project: %1</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
         <location filename="../../ui/presenters/workbench_command_presenter.py" line="226"/>
         <source>Git Not Found</source>
         <translation type="unfinished"></translation>

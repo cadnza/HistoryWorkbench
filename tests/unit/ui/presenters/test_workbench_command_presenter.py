@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from freecad.history_wb.domain.git.models import GitRepository
+from freecad.history_wb.qt import QtCore, QtWidgets
 from freecad.history_wb.ui.presenters.workbench_command_presenter import WorkbenchCommandPresenter
 
 
@@ -34,7 +35,10 @@ def mock_get_main_window(mock_main_window: MagicMock) -> MagicMock:
 def mock_actions() -> dict:
     """Create a dict of mock container actions."""
     return {
-        "find_active_git_repository_action": MagicMock(),
+        "find_active_git_repository_action": MagicMock(
+            get_open_document_paths=MagicMock(return_value=[]),
+            get_git_executable=MagicMock(return_value="git"),
+        ),
         "check_git_availability_action": MagicMock(
             execute=MagicMock(return_value=MagicMock(is_success=True, data=True))
         ),
@@ -225,13 +229,48 @@ class TestUpdateGitignore:
 class TestRefreshGitRepository:
     """Tests for refresh_git_repository flow."""
 
+    @staticmethod
+    def _run_refresh(presenter: WorkbenchCommandPresenter) -> None:
+        """Wait for the asynchronous refresh result to reach the UI thread."""
+        event_loop = QtCore.QEventLoop()
+        presenter.repository_changed.connect(lambda *_: event_loop.quit())
+        QtCore.QTimer.singleShot(5000, event_loop.quit)
+        presenter.refresh_git_repository()
+        event_loop.exec()
+
+    def test_refresh_snapshots_freecad_data_on_ui_thread_and_detects_repository_in_worker(
+        self,
+        presenter: WorkbenchCommandPresenter,
+        mock_actions: dict,
+    ) -> None:
+        """Git repository detection runs off-thread after UI-only data is captured."""
+        app = QtWidgets.QApplication.instance()
+        assert app is not None
+        ui_thread = app.thread()
+        snapshot_threads: list[QtCore.QThread] = []
+        detection_threads: list[QtCore.QThread] = []
+        action = mock_actions["find_active_git_repository_action"]
+        action.get_open_document_paths.side_effect = lambda: (
+            snapshot_threads.append(QtCore.QThread.currentThread()) or ["/home/user/project/model.FCStd"]
+        )
+        action.get_git_executable.side_effect = lambda: snapshot_threads.append(QtCore.QThread.currentThread()) or "git"
+        action.execute.side_effect = lambda *_args, **_kwargs: (
+            detection_threads.append(QtCore.QThread.currentThread()) or MagicMock(is_success=False, data=None)
+        )
+
+        self._run_refresh(presenter)
+
+        assert snapshot_threads == [ui_thread, ui_thread]
+        assert detection_threads
+        assert detection_threads[0] != ui_thread
+
     def test_refresh_returns_repository_on_success(
         self,
         presenter: WorkbenchCommandPresenter,
         mock_application_state: MagicMock,
         mock_actions: dict,
     ) -> None:
-        """refresh_git_repository() returns and stores the detected repository."""
+        """refresh_git_repository() stores the detected repository when ready."""
         mock_application_state.git_repository = None
         repo = GitRepository(name="proj", absolute_path="/home/user/proj")
         mock_result = MagicMock()
@@ -239,10 +278,14 @@ class TestRefreshGitRepository:
         mock_result.data = repo
         mock_actions["find_active_git_repository_action"].execute.return_value = mock_result
 
-        result = presenter.refresh_git_repository()
+        self._run_refresh(presenter)
 
-        assert result is repo
         assert mock_application_state.git_repository is repo
+        mock_actions["find_active_git_repository_action"].execute.assert_called_once_with(
+            [],
+            current_repository=None,
+            git_executable="git",
+        )
 
     def test_refresh_passes_current_repository_to_action(
         self,
@@ -258,10 +301,12 @@ class TestRefreshGitRepository:
         mock_result.data = current_repo
         mock_actions["find_active_git_repository_action"].execute.return_value = mock_result
 
-        presenter.refresh_git_repository()
+        self._run_refresh(presenter)
 
         mock_actions["find_active_git_repository_action"].execute.assert_called_once_with(
-            current_repository=current_repo
+            [],
+            current_repository=current_repo,
+            git_executable="git",
         )
 
     def test_refresh_returns_current_repo_on_failure(
@@ -270,16 +315,15 @@ class TestRefreshGitRepository:
         mock_application_state: MagicMock,
         mock_actions: dict,
     ) -> None:
-        """refresh_git_repository() returns the current repository when detection fails."""
+        """refresh_git_repository() retains the current repository when detection fails."""
         current_repo = GitRepository(name="current", absolute_path="/home/user/current")
         mock_application_state.git_repository = current_repo
         mock_result = MagicMock()
         mock_result.is_success = False
         mock_actions["find_active_git_repository_action"].execute.return_value = mock_result
 
-        result = presenter.refresh_git_repository()
+        self._run_refresh(presenter)
 
-        assert result is current_repo
         assert mock_application_state.git_repository is current_repo
 
     def test_refresh_returns_none_when_no_repo_and_detection_fails(
@@ -288,15 +332,16 @@ class TestRefreshGitRepository:
         mock_application_state: MagicMock,
         mock_actions: dict,
     ) -> None:
-        """refresh_git_repository() returns None when no repo exists and detection fails."""
+        """refresh_git_repository() leaves state empty when detection fails."""
         mock_application_state.git_repository = None
         mock_result = MagicMock()
         mock_result.is_success = False
         mock_actions["find_active_git_repository_action"].execute.return_value = mock_result
+        mock_actions["find_active_git_repository_action"].get_git_executable.return_value = None
 
-        result = presenter.refresh_git_repository()
+        self._run_refresh(presenter)
 
-        assert result is None
+        assert mock_application_state.git_repository is None
 
     def test_refresh_shows_git_not_found_popup_when_detection_fails_and_git_missing(
         self,
@@ -309,14 +354,12 @@ class TestRefreshGitRepository:
         mock_result = MagicMock()
         mock_result.is_success = False
         mock_actions["find_active_git_repository_action"].execute.return_value = mock_result
-        mock_actions["check_git_availability_action"].execute.return_value = MagicMock(
-            is_success=True, data=False
-        )
+        mock_actions["find_active_git_repository_action"].get_git_executable.return_value = None
+        mock_actions["check_git_availability_action"].execute.return_value = MagicMock(is_success=True, data=False)
 
         with patch.object(presenter, "_show_error_message") as mock_error:
-            result = presenter.refresh_git_repository()
+            self._run_refresh(presenter)
 
-        assert result is None
         mock_error.assert_called_once_with(
             "Git Not Found",
             "Git executable not found or invalid. Ensure it's installed, or configure its location manually in the History Workbench preferences.",
@@ -335,7 +378,7 @@ class TestRefreshGitRepository:
         mock_actions["find_active_git_repository_action"].execute.return_value = mock_result
 
         with patch.object(presenter, "_show_error_message") as mock_error:
-            presenter.refresh_git_repository()
+            self._run_refresh(presenter)
 
         mock_error.assert_not_called()
 
@@ -349,9 +392,7 @@ class TestInitializeRepositoryGitAvailability:
         mock_actions: dict,
     ) -> None:
         """initialize_repository() aborts and shows guidance when git is unavailable."""
-        mock_actions["check_git_availability_action"].execute.return_value = MagicMock(
-            is_success=True, data=False
-        )
+        mock_actions["check_git_availability_action"].execute.return_value = MagicMock(is_success=True, data=False)
 
         with (
             patch.object(presenter, "_show_error_message") as mock_error,

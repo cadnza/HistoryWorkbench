@@ -26,7 +26,7 @@ class GitPort(Protocol):
         get_commits: Method to get recent commits from a git repository.
     """
 
-    def find_top_level_git_path(self, path: str) -> str | None:
+    def find_top_level_git_path(self, path: str, git_executable: str | None = None) -> str | None:
         """Find git root by traversing up from path.
 
         This method determines if a given path is within a git repository and,
@@ -41,6 +41,10 @@ class GitPort(Protocol):
         """
         ...
 
+    def get_git_executable(self) -> str | None:
+        """Resolve configured Git executable without running a Git command."""
+        ...
+
     def is_git_executable_available(self) -> bool:
         """Return whether the git executable can be located.
 
@@ -52,7 +56,13 @@ class GitPort(Protocol):
         """
         ...
 
-    def get_commits(self, path: str, limit: int = 20, skip: int = 0) -> list[GitCommit]:
+    def get_commits(
+        self,
+        path: str,
+        limit: int = 20,
+        skip: int = 0,
+        git_executable: str | None = None,
+    ) -> list[GitCommit]:
         """Get recent commits from git repository.
 
         Args:

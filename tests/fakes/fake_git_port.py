@@ -5,7 +5,6 @@
 
 import os
 from datetime import datetime
-from pathlib import Path
 
 from freecad.history_wb.domain.git.models import DirtyFile, GitCommit, GitIdentity
 
@@ -137,11 +136,15 @@ class FakeGitPort:
         """Return the configured git executable availability (True by default)."""
         return self._git_executable_available
 
+    def get_git_executable(self) -> str | None:
+        """Return a fake executable path when configured as available."""
+        return "fake-git" if self._git_executable_available else None
+
     def set_git_executable_available(self, available: bool) -> None:
         """Control the simulated git executable availability for tests."""
         self._git_executable_available = available
 
-    def find_top_level_git_path(self, path: str) -> str | None:
+    def find_top_level_git_path(self, path: str, git_executable: str | None = None) -> str | None:
         """Find git root by checking if path is within a known git repo.
 
         This implementation checks if the given path or any of its parent
@@ -182,7 +185,13 @@ class FakeGitPort:
 
         return None
 
-    def get_commits(self, path: str, limit: int = 20, skip: int = 0) -> list[GitCommit]:
+    def get_commits(
+        self,
+        path: str,
+        limit: int = 20,
+        skip: int = 0,
+        git_executable: str | None = None,
+    ) -> list[GitCommit]:
         """Get recent commits from the fake git repository.
 
         This implementation returns the configured commits sorted by timestamp

@@ -3,12 +3,14 @@
 # repository_changed signal and updates the panel UI reactively.
 """Unit tests for GitRepositoryPresenter."""
 
+from collections.abc import Callable
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from freecad.history_wb.domain.git.models import GitCommit, GitRepository
+from freecad.history_wb.qt import QtCore
 from freecad.history_wb.ui.presenters.git_repository_presenter import GitRepositoryPresenter
 
 
@@ -41,7 +43,27 @@ def mock_command_presenter() -> MagicMock:
     """Create a mock WorkbenchCommandPresenter with repository_changed signal."""
     mock = MagicMock()
     mock.repository_changed = MagicMock()
+    mock.get_git_executable.return_value = "git"
     return mock
+
+
+def _wait_for_mock_call(
+    mock_method: MagicMock,
+    trigger: Callable[[], None],
+    on_call: Callable[[], None] | None = None,
+) -> None:
+    """Run a callback and wait for its asynchronous UI update."""
+    event_loop = QtCore.QEventLoop()
+
+    def finish_wait(*_args: object, **_kwargs: object) -> None:
+        if on_call is not None:
+            on_call()
+        event_loop.quit()
+
+    mock_method.side_effect = finish_wait
+    QtCore.QTimer.singleShot(5000, event_loop.quit)
+    trigger()
+    event_loop.exec()
 
 
 @pytest.fixture
@@ -72,9 +94,7 @@ class TestGitRepositoryPresenter:
         presenter: GitRepositoryPresenter,
     ) -> None:
         """Presenter connects _on_repository_changed to repository_changed signal on init."""
-        mock_command_presenter.repository_changed.connect.assert_called_once_with(
-            presenter._on_repository_changed
-        )
+        mock_command_presenter.repository_changed.connect.assert_called_once_with(presenter._on_repository_changed)
 
     def test_on_workbench_activated_calls_refresh(
         self,
@@ -114,12 +134,30 @@ class TestGitRepositoryPresenter:
         mock_result = MagicMock()
         mock_result.is_success = True
         mock_result.data = commits
-        mock_get_commits_action.execute.return_value = mock_result
+        worker_threads: list[QtCore.QThread] = []
+        ui_threads: list[QtCore.QThread] = []
+        app = QtCore.QCoreApplication.instance()
+        assert app is not None
+        mock_get_commits_action.execute.side_effect = lambda *_args, **_kwargs: (
+            worker_threads.append(QtCore.QThread.currentThread()) or mock_result
+        )
 
-        presenter._on_repository_changed(repo)
+        _wait_for_mock_call(
+            mock_view.show_commits,
+            lambda: presenter._on_repository_changed(repo),
+            on_call=lambda: ui_threads.append(QtCore.QThread.currentThread()),
+        )
 
+        assert worker_threads
+        assert worker_threads[0] != app.thread()
+        assert ui_threads == [app.thread()]
         mock_view.show_repository.assert_called_once_with(repo)
-        mock_get_commits_action.execute.assert_called_once_with(repo)
+        mock_get_commits_action.execute.assert_called_once_with(
+            repo,
+            limit=20,
+            skip=0,
+            git_executable="git",
+        )
 
     def test_on_repository_changed_with_none_shows_empty(
         self,
@@ -259,10 +297,16 @@ class TestCommitLoading:
         mock_get_commits_action.execute.return_value = mock_result
 
         repo = GitRepository(name="test_project", absolute_path="/home/user/test_project")
+        presenter._reset_commit_pagination(repo)
 
-        presenter._load_initial_commits(repo)
+        _wait_for_mock_call(mock_view.show_commits, lambda: presenter._load_initial_commits(repo))
 
-        mock_get_commits_action.execute.assert_called_once_with(repo)
+        mock_get_commits_action.execute.assert_called_once_with(
+            repo,
+            limit=20,
+            skip=0,
+            git_executable="git",
+        )
         mock_view.show_commits.assert_called_once_with(commits)
 
     def test_load_initial_commits_shows_empty_list_on_failure(
@@ -278,8 +322,9 @@ class TestCommitLoading:
         mock_get_commits_action.execute.return_value = mock_result
 
         repo = GitRepository(name="test_project", absolute_path="/home/user/test_project")
+        presenter._reset_commit_pagination(repo)
 
-        presenter._load_initial_commits(repo)
+        _wait_for_mock_call(mock_view.show_commits, lambda: presenter._load_initial_commits(repo))
 
         mock_view.show_commits.assert_called_once_with([])
 
@@ -304,9 +349,14 @@ class TestCommitLoading:
         result.data = commits
         presenter._get_commits_action.execute.return_value = result
 
-        presenter.load_more_commits()
+        _wait_for_mock_call(presenter._history_view.append_commits, presenter.load_more_commits)
 
-        presenter._get_commits_action.execute.assert_called_once_with(repo, limit=20, skip=20)
+        presenter._get_commits_action.execute.assert_called_once_with(
+            repo,
+            limit=20,
+            skip=20,
+            git_executable="git",
+        )
         presenter._history_view.append_commits.assert_called_once_with(commits)
 
     def test_load_more_commits_skips_when_no_more(self, presenter: GitRepositoryPresenter) -> None:
@@ -330,11 +380,23 @@ class TestCommitLoading:
 
         result = MagicMock()
         result.is_success = True
-        result.data = []
+        result.data = [
+            GitCommit(
+                id="older",
+                message="Older commit",
+                author="Dev",
+                timestamp=datetime.fromisoformat("2024-01-10T10:30:00+00:00"),
+            )
+        ]
         presenter._get_commits_action.execute.return_value = result
 
         with patch("freecad.history_wb.ui.presenters.git_repository_presenter.monotonic", return_value=10.0):
             presenter.load_more_commits()
-            presenter.load_more_commits()
+            _wait_for_mock_call(presenter._history_view.append_commits, presenter.load_more_commits)
 
-        presenter._get_commits_action.execute.assert_called_once_with(repo, limit=20, skip=20)
+            presenter._get_commits_action.execute.assert_called_once_with(
+                repo,
+                limit=20,
+                skip=20,
+                git_executable="git",
+            )

@@ -2,19 +2,33 @@
 """Git repository presenter for UI layer."""
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from time import monotonic
+from typing import cast
 
 from freecad.history_wb.application.actions.git_history.get_commits import GetCommitsAction
+from freecad.history_wb.application.actions.result_models import Result
 from freecad.history_wb.domain.git.models import GitRepository
+from freecad.history_wb.qt import QtCore
 from freecad.history_wb.ui.state import ApplicationState
 from freecad.history_wb.ui.views.diff_panel.dialog_view import DialogView
 from freecad.history_wb.ui.views.history.panel import HistoryPanelWidget
-from freecad.history_wb.utils import Log
+from freecad.history_wb.utils import Log, translate
 
+from .git_repository.background_task import GitOperationThread
 from .workbench_command_presenter import WorkbenchCommandPresenter
 
 
-class GitRepositoryPresenter:
+@dataclass(frozen=True)
+class _CommitLoadRequest:
+    """Identify a commit page request and the repository state it belongs to."""
+
+    repo: GitRepository
+    skip: int
+    generation: int
+
+
+class GitRepositoryPresenter(QtCore.QObject):
     """Handles git repository UI display and commit loading.
 
     This presenter is responsible for:
@@ -34,6 +48,7 @@ class GitRepositoryPresenter:
         application_state: ApplicationState,
         clear_doc_diffs: Callable[[], None],
         workbench_command_presenter: WorkbenchCommandPresenter,
+        parent: QtCore.QObject | None = None,
     ) -> None:
         """Initialize the presenter with required dependencies.
 
@@ -44,7 +59,9 @@ class GitRepositoryPresenter:
             application_state: Application-scoped state holder for storing repository.
             clear_doc_diffs: Callback to clear document diffs.
             workbench_command_presenter: App-scoped presenter for detection and shared command flows.
+            parent: Qt owner that controls this presenter's panel lifetime.
         """
+        super().__init__(parent)
         self._history_view = history_view
         self._dialog_view = dialog_view
         self._get_commits_action = get_commits_action
@@ -56,6 +73,8 @@ class GitRepositoryPresenter:
         self._has_more_commits = False
         self._is_loading_commits = False
         self._active_repo_path: str | None = None
+        self._load_generation = 0
+        self._commit_threads: set[GitOperationThread] = set()
         self._last_scroll_load_ts = 0.0
         self._scroll_load_interval_seconds = 0.2
 
@@ -111,21 +130,7 @@ class GitRepositoryPresenter:
         if self._is_loading_commits:
             return
         self._is_loading_commits = True
-        result = self._get_commits_action.execute(repo)
-        self._is_loading_commits = False
-
-        if result.is_success:
-            commits = result.data
-            self._loaded_commit_count = len(commits)
-            self._has_more_commits = len(commits) == self._page_size
-            self._clear_doc_diffs()
-            self._history_view.show_commits(commits)
-        else:
-            self._loaded_commit_count = 0
-            self._has_more_commits = False
-            self._clear_doc_diffs()
-            self._history_view.show_commits([])
-            Log.warning(f"Failed to load commits: {result.message}")
+        self._start_commit_load(repo, skip=0)
 
     def load_more_commits(self) -> None:
         """Load next commit page when history scroll reaches bottom area."""
@@ -143,19 +148,69 @@ class GitRepositoryPresenter:
 
         self._last_scroll_load_ts = now
         self._is_loading_commits = True
-        result = self._get_commits_action.execute(
-            repo,
-            limit=self._page_size,
-            skip=self._loaded_commit_count,
-        )
-        self._is_loading_commits = False
+        self._start_commit_load(repo, skip=self._loaded_commit_count)
 
-        if not result.is_success:
+    def _start_commit_load(self, repo: GitRepository, *, skip: int) -> None:
+        """Start a commit-page query after capturing preferences on the UI thread."""
+        git_executable = self._command_presenter.get_git_executable()
+        if git_executable is None:
+            self._command_presenter.check_git_availability()
+            self._is_loading_commits = False
             self._has_more_commits = False
-            Log.warning(f"Failed to load more commits: {result.message}")
+            if skip == 0:
+                self._loaded_commit_count = 0
+                self._clear_doc_diffs()
+                self._history_view.show_commits([])
+            return
+
+        request = _CommitLoadRequest(repo, skip, self._load_generation)
+        application = QtCore.QCoreApplication.instance()
+        if application is None:
+            raise RuntimeError("A Qt application must exist before loading Git history.")
+
+        get_commits_action = self._get_commits_action
+        page_size = self._page_size
+        worker = GitOperationThread(
+            lambda: (
+                request,
+                get_commits_action.execute(
+                    repo,
+                    limit=page_size,
+                    skip=skip,
+                    git_executable=git_executable,
+                ),
+            ),
+            request,
+            application,
+        )
+        self._commit_threads.add(worker)
+        worker.succeeded.connect(self._on_commit_load_succeeded)
+        worker.failed.connect(self._on_commit_load_failed)
+        worker.finished.connect(self._on_commit_thread_finished)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _on_commit_load_succeeded(self, context: object, payload: object) -> None:
+        """Apply loaded commit rows on the UI thread if request is still current."""
+        request, result = cast(tuple[_CommitLoadRequest, Result], payload)
+        if context != request:
+            return
+        if request.generation != self._load_generation or request.repo.absolute_path != self._active_repo_path:
+            return
+
+        self._is_loading_commits = False
+        if not result.is_success:
+            self._on_commit_load_result_failed(request, result.message or "Git history query failed")
             return
 
         commits = result.data
+        if request.skip == 0:
+            self._loaded_commit_count = len(commits)
+            self._has_more_commits = len(commits) == self._page_size
+            self._clear_doc_diffs()
+            self._history_view.show_commits(commits)
+            return
+
         if not commits:
             self._has_more_commits = False
             return
@@ -164,8 +219,38 @@ class GitRepositoryPresenter:
         self._loaded_commit_count += len(commits)
         self._has_more_commits = len(commits) == self._page_size
 
+    def _on_commit_load_failed(self, context: object, error: str) -> None:
+        """Report an unexpected worker failure without applying stale results."""
+        request = cast(_CommitLoadRequest, context)
+        if request.generation != self._load_generation or request.repo.absolute_path != self._active_repo_path:
+            return
+
+        self._is_loading_commits = False
+        self._on_commit_load_result_failed(request, error)
+
+    def _on_commit_load_result_failed(self, request: _CommitLoadRequest, message: str) -> None:
+        """Show failed commit loading state and report its cause."""
+        Log.warning(f"Failed to load commits: {message}")
+        self._has_more_commits = False
+        if request.skip == 0:
+            self._loaded_commit_count = 0
+            self._clear_doc_diffs()
+            self._history_view.show_commits([])
+        self._dialog_view.show_error_message(
+            translate("History", "History Load Failed"),
+            translate("History", "Could not load project history: %1").replace("%1", message),
+        )
+
+    def _on_commit_thread_finished(self) -> None:
+        """Release completed commit workers after their result signals are handled."""
+        worker = self.sender()
+        if isinstance(worker, GitOperationThread) and worker in self._commit_threads:
+            self._commit_threads.remove(worker)
+            worker.deleteLater()
+
     def _reset_commit_pagination(self, repo: GitRepository | None) -> None:
         """Reset pagination state for current repository."""
+        self._load_generation += 1
         self._loaded_commit_count = 0
         self._has_more_commits = repo is not None
         self._is_loading_commits = False

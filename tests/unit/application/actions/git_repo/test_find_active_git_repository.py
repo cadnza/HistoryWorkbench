@@ -12,6 +12,15 @@ from tests.fakes.fake_freecad_port import FakeFreeCadPort
 from tests.fakes.fake_git_port import FakeGitPort
 
 
+def _execute(action: FindActiveGitRepositoryAction, current_repository: GitRepository | None = None):
+    """Run repository resolution with document and preference snapshots."""
+    return action.execute(
+        action.get_open_document_paths(),
+        current_repository=current_repository,
+        git_executable=action.get_git_executable(),
+    )
+
+
 class TestFindActiveGitRepositoryAction:
     """Tests for FindActiveGitRepositoryAction execute behavior."""
 
@@ -27,7 +36,7 @@ class TestFindActiveGitRepositoryAction:
         service = GitService(fake_git)
         action = FindActiveGitRepositoryAction(fake_freecad, service)
 
-        result = action.execute()
+        result = _execute(action)
 
         assert result.is_success is True
         assert isinstance(result.data, GitRepository)
@@ -39,7 +48,7 @@ class TestFindActiveGitRepositoryAction:
         service = GitService(FakeGitPort())
         action = FindActiveGitRepositoryAction(fake_freecad, service)
 
-        result = action.execute()
+        result = _execute(action)
 
         assert result.is_success is False
         assert result.data is None
@@ -54,7 +63,7 @@ class TestFindActiveGitRepositoryAction:
         service = GitService(FakeGitPort())
         action = FindActiveGitRepositoryAction(fake_freecad, service)
 
-        result = action.execute()
+        result = _execute(action)
 
         assert result.is_success is False
         assert result.message == "No git repository found for open documents"
@@ -73,7 +82,7 @@ class TestFindActiveGitRepositoryAction:
         service = GitService(fake_git)
         action = FindActiveGitRepositoryAction(fake_freecad, service)
 
-        result = action.execute()
+        result = _execute(action)
 
         assert result.is_success is True
         assert result.data.name == "saved"
@@ -89,7 +98,7 @@ class TestFindActiveGitRepositoryAction:
         service = GitService(FakeGitPort())
         action = FindActiveGitRepositoryAction(fake_freecad, service)
 
-        result = action.execute()
+        result = _execute(action)
 
         assert result.is_success is False
         assert result.message == "No git repository found for open documents"
@@ -111,7 +120,7 @@ class TestFindActiveGitRepositoryAction:
         action = FindActiveGitRepositoryAction(fake_freecad, service)
 
         current_repo = GitRepository(name="project1", absolute_path="/home/user/project1")
-        result = action.execute(current_repository=current_repo)
+        result = _execute(action, current_repo)
 
         assert result.is_success is True
         assert result.data.absolute_path == "/home/user/project1"
@@ -131,7 +140,7 @@ class TestFindActiveGitRepositoryAction:
         action = FindActiveGitRepositoryAction(fake_freecad, service)
 
         current_repo = GitRepository(name="project1", absolute_path="/home/user/project1")
-        result = action.execute(current_repository=current_repo)
+        result = _execute(action, current_repo)
 
         assert result.is_success is True
         assert result.data.absolute_path == "/home/user/project2"
@@ -152,7 +161,7 @@ class TestFindActiveGitRepositoryAction:
         service = GitService(fake_git)
         action = FindActiveGitRepositoryAction(fake_freecad, service)
 
-        result = action.execute()
+        result = _execute(action)
 
         assert result.is_success is True
         assert result.data.absolute_path == "/home/user/project2"

@@ -12,7 +12,6 @@ from freecad.history_wb.domain.freecad_ports import FreeCadContext
 from freecad.history_wb.domain.git.git_service import GitService
 from freecad.history_wb.infrastructure.freecad.ports import get_port
 from freecad.history_wb.infrastructure.git.git_port_adapter import GitPortAdapter
-
 from tests.fakes.fake_repositories import FakeSettingsRepository
 
 
@@ -55,7 +54,11 @@ class TestFindActiveGitRepositoryAction:
         doc = freecad_app.openDocument(str(test_doc_path))
 
         # Execute the action
-        result = action.execute()
+        result = action.execute(
+            action.get_open_document_paths(),
+            current_repository=None,
+            git_executable=action.get_git_executable(),
+        )
 
         # Verify success
         assert result.is_success, f"Expected success, got failure: {result.message}"
@@ -98,7 +101,11 @@ class TestFindActiveGitRepositoryAction:
         doc = freecad_app.newDocument("UnsavedTestDoc")
 
         # Execute the action
-        result = action.execute()
+        result = action.execute(
+            action.get_open_document_paths(),
+            current_repository=None,
+            git_executable=action.get_git_executable(),
+        )
 
         # Verify failure - unsaved documents have empty FileName
         assert not result.is_success
@@ -138,7 +145,11 @@ class TestFindActiveGitRepositoryAction:
             pass
 
         # Execute the action
-        result = action.execute()
+        result = action.execute(
+            action.get_open_document_paths(),
+            current_repository=None,
+            git_executable=action.get_git_executable(),
+        )
 
         # Verify failure
         assert not result.is_success

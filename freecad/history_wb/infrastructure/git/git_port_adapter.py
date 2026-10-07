@@ -38,8 +38,15 @@ class GitPortAdapter(GitPort):
         """Initialize adapter with the settings repository for git executable preference."""
         self._settings_repo = settings_repo
 
-    def _resolve_git_executable(self) -> str | None:
+    def _resolve_git_executable(self, git_executable: str | None = None) -> str | None:
         """Return the git executable to invoke, or None when git cannot be located."""
+        if git_executable is not None:
+            return git_executable
+
+        return self.get_git_executable()
+
+    def get_git_executable(self) -> str | None:
+        """Resolve the configured git executable or locate git on PATH."""
         configured = self._settings_repo.get_git_executable()
         if configured:
             return configured
@@ -86,10 +93,11 @@ class GitPortAdapter(GitPort):
         cwd: str,
         timeout: int,
         extra_env: dict[str, str] | None = None,
+        git_executable: str | None = None,
     ) -> subprocess.CompletedProcess[str] | None:
         """Run git command with consistent encoding and error handling."""
-        git_executable = self._resolve_git_executable()
-        if git_executable is None:
+        resolved_git_executable = self._resolve_git_executable(git_executable)
+        if resolved_git_executable is None:
             Log.warning("Git command not found - git may not be installed or not in PATH")
             return None
 
@@ -109,7 +117,7 @@ class GitPortAdapter(GitPort):
             run_kwargs["env"] = os.environ | env_overrides
         run_kwargs.update(self._windows_no_console_kwargs())
 
-        return subprocess.run([git_executable, *args], **run_kwargs)
+        return subprocess.run([resolved_git_executable, *args], **run_kwargs)
 
     def _global_git_config_home_path(self) -> str:
         """Return home path used for global git config in current runtime."""
@@ -184,7 +192,7 @@ class GitPortAdapter(GitPort):
             return False
         return True
 
-    def find_top_level_git_path(self, path: str) -> str | None:
+    def find_top_level_git_path(self, path: str, git_executable: str | None = None) -> str | None:
         """Find git root using git CLI.
 
         Uses 'git rev-parse --show-toplevel' to find the root of the git
@@ -204,7 +212,12 @@ class GitPortAdapter(GitPort):
             cwd_path = os.path.dirname(path)
 
         try:
-            result = self._run_git(["rev-parse", "--show-toplevel"], cwd=cwd_path, timeout=5)
+            result = self._run_git(
+                ["rev-parse", "--show-toplevel"],
+                cwd=cwd_path,
+                timeout=5,
+                git_executable=git_executable,
+            )
             if result is None:
                 return None
             if result.returncode == 0:
@@ -235,7 +248,13 @@ class GitPortAdapter(GitPort):
         normalized_stderr = stderr.lower()
         return "does not have any commits yet" in normalized_stderr
 
-    def get_commits(self, path: str, limit: int = 20, skip: int = 0) -> list[GitCommit]:
+    def get_commits(
+        self,
+        path: str,
+        limit: int = 20,
+        skip: int = 0,
+        git_executable: str | None = None,
+    ) -> list[GitCommit]:
         """Get recent commits using git CLI.
 
         Uses 'git log' with null-byte separators to handle multiline messages
@@ -257,7 +276,7 @@ class GitPortAdapter(GitPort):
         Returns:
             List of GitCommit objects in DESC order (newest first).
         """
-        output = self._get_commits_output(path=path, limit=limit, skip=skip)
+        output = self._get_commits_output(path=path, limit=limit, skip=skip, git_executable=git_executable)
         if not output:
             return []
 
@@ -291,7 +310,13 @@ class GitPortAdapter(GitPort):
 
         return commits
 
-    def _get_commits_output(self, path: str, limit: int, skip: int) -> str:
+    def _get_commits_output(
+        self,
+        path: str,
+        limit: int,
+        skip: int,
+        git_executable: str | None,
+    ) -> str:
         """Run git log command and return stripped output."""
         cwd_path = path
         if path and os.path.isfile(path):
@@ -303,7 +328,7 @@ class GitPortAdapter(GitPort):
         log_args.extend([f"-n{limit}", "--format=%H%x00%B%x00%an%x00%aI%x00"])
 
         try:
-            result = self._run_git(log_args, cwd=cwd_path, timeout=10)
+            result = self._run_git(log_args, cwd=cwd_path, timeout=10, git_executable=git_executable)
         except subprocess.TimeoutExpired:
             Log.warning(f"Git log command timed out for path: {path}")
             return ""

@@ -1,7 +1,4 @@
-# File responsibility: This module provides the FindActiveGitRepositoryAction class
-# which is responsible for finding the active git repository from open FreeCAD documents.
-# It iterates through all open documents, skipping unsaved ones, and uses GitService
-# to find the first document that is in a git repository.
+# File responsibility: Collects open document paths on the UI thread and resolves their git repositories.
 """Application action for finding active git repository."""
 
 from __future__ import annotations
@@ -46,8 +43,22 @@ class FindActiveGitRepositoryAction:
         self._freecad_port = freecad_port
         self._git_service = git_service
 
-    def execute(self, current_repository: GitRepository | None = None) -> Result:
-        """Find active git repository from open documents.
+    def get_open_document_paths(self) -> list[str]:
+        """Snapshot open document paths while on FreeCAD's UI thread."""
+        return [doc.FileName for doc in self._freecad_port.get_all_open_documents()]
+
+    def get_git_executable(self) -> str | None:
+        """Resolve the configured Git executable before starting background work."""
+        return self._git_service.get_git_executable()
+
+    def execute(
+        self,
+        document_paths: list[str],
+        *,
+        current_repository: GitRepository | None,
+        git_executable: str | None,
+    ) -> Result:
+        """Find active repository from a UI-thread snapshot of document paths.
 
         Uses sticky repository logic: once a repository is detected, it is
         retained as long as at least one open document belongs to it. This
@@ -55,25 +66,27 @@ class FindActiveGitRepositoryAction:
         repositories are open simultaneously.
 
         Args:
+            document_paths: Paths captured from FreeCAD documents on the UI thread.
             current_repository: The currently active repository, if any.
                 When provided, returned immediately if any open document
                 belongs to it.
+            git_executable: Executable path resolved on the UI thread.
 
         Returns:
             Result with GitRepository if found, or failure result with error message.
         """
-        docs = self._freecad_port.get_all_open_documents()
-        if not docs:
+        if not document_paths:
             return Result.failure("No documents are open")
+        if git_executable is None:
+            return Result.failure("Git executable not found")
 
         first_repo: GitRepository | None = None
-        for doc in docs:
-            doc_path = doc.FileName
+        for doc_path in document_paths:
             if not doc_path:
                 Log.debug("Skipping unsaved document")
                 continue
 
-            repo = self._git_service.get_repository(doc_path)
+            repo = self._git_service.get_repository(doc_path, git_executable)
             if repo is None:
                 continue
 
